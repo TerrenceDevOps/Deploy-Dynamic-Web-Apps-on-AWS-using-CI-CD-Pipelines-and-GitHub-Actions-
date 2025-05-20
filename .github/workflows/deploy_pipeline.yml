@@ -37,22 +37,33 @@ jobs:
         working-directory: ./iac
         run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
 
-      # Output extraction (only runs on 'apply')
       - name: Get Terraform outputs
         if: env.TERRAFORM_ACTION == 'apply'
         working-directory: ./iac
         run: |
-          echo "IMAGE_NAME=$(terraform output -raw image_name)" >> $GITHUB_ENV
-          echo "DOMAIN_NAME=$(terraform output -raw domain_name)" >> $GITHUB_ENV
-          echo "RDS_ENDPOINT=$(terraform output -raw rds_endpoint)" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$(terraform output -raw image_tag)" >> $GITHUB_ENV
-          echo "PRIVATE_DATA_SUBNET_AZ1_ID=$(terraform output -raw private_data_subnet_az1_id)" >> $GITHUB_ENV
-          echo "RUNNER_SECURITY_GROUP_ID=$(terraform output -raw runner_security_group_id)" >> $GITHUB_ENV
-          echo "TASK_DEFINITION_NAME=$(terraform output -raw task_definition_name)" >> $GITHUB_ENV
-          echo "ECS_CLUSTER_NAME=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_ENV
-          echo "ECS_SERVICE_NAME=$(terraform output -raw ecs_service_name)" >> $GITHUB_ENV
-          echo "ENVIRONMENT_FILE_NAME=$(terraform output -raw environment_file_name)" >> $GITHUB_ENV
-          echo "ENV_FILE_BUCKET_NAME=$(terraform output -raw env_file_bucket_name)" >> $GITHUB_ENV
+          IMAGE_NAME=$(terraform output -raw image_name | tr -d '\r\n')
+          DOMAIN_NAME=$(terraform output -raw domain_name | tr -d '\r\n')
+          RDS_ENDPOINT=$(terraform output -raw rds_endpoint | tr -d '\r\n')
+          IMAGE_TAG=$(terraform output -raw image_tag | tr -d '\r\n')
+          PRIVATE_DATA_SUBNET_AZ1_ID=$(terraform output -raw private_data_subnet_az1_id | tr -d '\r\n')
+          RUNNER_SECURITY_GROUP_ID=$(terraform output -raw runner_security_group_id | tr -d '\r\n')
+          TASK_DEFINITION_NAME=$(terraform output -raw task_definition_name | tr -d '\r\n')
+          ECS_CLUSTER_NAME=$(terraform output -raw ecs_cluster_name | tr -d '\r\n')
+          ECS_SERVICE_NAME=$(terraform output -raw ecs_service_name | tr -d '\r\n')
+          ENVIRONMENT_FILE_NAME=$(terraform output -raw environment_file_name | tr -d '\r\n')
+          ENV_FILE_BUCKET_NAME=$(terraform output -raw env_file_bucket_name | tr -d '\r\n')
+
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+          echo "DOMAIN_NAME=$DOMAIN_NAME" >> $GITHUB_ENV
+          echo "RDS_ENDPOINT=$RDS_ENDPOINT" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "PRIVATE_DATA_SUBNET_AZ1_ID=$PRIVATE_DATA_SUBNET_AZ1_ID" >> $GITHUB_ENV
+          echo "RUNNER_SECURITY_GROUP_ID=$RUNNER_SECURITY_GROUP_ID" >> $GITHUB_ENV
+          echo "TASK_DEFINITION_NAME=$TASK_DEFINITION_NAME" >> $GITHUB_ENV
+          echo "ECS_CLUSTER_NAME=$ECS_CLUSTER_NAME" >> $GITHUB_ENV
+          echo "ECS_SERVICE_NAME=$ECS_SERVICE_NAME" >> $GITHUB_ENV
+          echo "ENVIRONMENT_FILE_NAME=$ENVIRONMENT_FILE_NAME" >> $GITHUB_ENV
+          echo "ENV_FILE_BUCKET_NAME=$ENV_FILE_BUCKET_NAME" >> $GITHUB_ENV
 
       - name: Print GITHUB_ENV contents
         run: cat $GITHUB_ENV
