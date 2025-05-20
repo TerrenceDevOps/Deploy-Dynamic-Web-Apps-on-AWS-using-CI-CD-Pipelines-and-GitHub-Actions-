@@ -89,7 +89,7 @@ jobs:
     needs: deploy_pipeline
     if: ${{ needs.deploy_pipeline.outputs.TERRAFORM_ACTION != 'destroy' && needs.deploy_pipeline.outputs.IMAGE_NAME != '' }}
     env:
-      AWS_REGION: ${{ env.AWS_REGION }}
+      AWS_REGION: ${{ needs.deploy_pipeline.outputs.AWS_REGION }}
       IMAGE_NAME: ${{ needs.deploy_pipeline.outputs.IMAGE_NAME }}
     steps:
       - name: Configure AWS credentials
