@@ -6,123 +6,77 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  # change to 'apply' or 'destroy' as needed
-  TERRAFORM_ACTION: apply
+  TERRAFORM_ACTION: apply  # change to 'destroy' when needed
 
 jobs:
   deploy_pipeline:
-    name: Deploy AWS Infrastructure with Terraform
+    name: Deploy AWS Infrastructure
     runs-on: ubuntu-latest
     outputs:
-      IMAGE_NAME: ${{ steps.extract_outputs.outputs.IMAGE_NAME }}
-      TERRAFORM_ACTION: ${{ env.TERRAFORM_ACTION }}
+      tf_image_name: ${{ steps.extract_outputs.outputs.image_name }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
         
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Set up Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.1.7
+          terraform_version: 1.5.7
 
       - name: Terraform Init
         working-directory: ./iac
-        run: terraform init
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: us-east-1
+        run: terraform init -input=false
 
       - name: Terraform Apply/Destroy
         working-directory: ./iac
-        run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: us-east-1
-          
-      - name: Extract Terraform outputs
+        run: |
+          if [ "${{ env.TERRAFORM_ACTION }}" = "apply" ]; then
+            terraform plan -out=tfplan
+            terraform apply -auto-approve tfplan
+          else
+            terraform destroy -auto-approve
+          fi
+
+      - name: Extract Outputs
         id: extract_outputs
         if: ${{ env.TERRAFORM_ACTION == 'apply' }}
         working-directory: ./iac
         run: |
-          # Function to safely handle outputs
-          handle_output() {
-            output_name=$1
-            output_value=$(terraform output -raw $output_name 2>/dev/null || echo "")
-            echo "$output_name=$output_value" >> $GITHUB_ENV
-            echo "$output_name<<EOF" >> $GITHUB_OUTPUT
-            echo "$output_value" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          }
+          # Simplified output handling without GITHUB_ENV
+          outputs=(
+            "image_name"
+            "domain_name"
+            "rds_endpoint"
+            "image_tag"
+          )
           
-          # Set outputs
-          handle_output "image_name"
-          handle_output "domain_name"
-          handle_output "rds_endpoint"
-          handle_output "image_tag"
-          handle_output "private_data_subnet_az1_id"
-          handle_output "runner_security_group_id"
-          handle_output "task_definition_name"
-          handle_output "ecs_cluster_name"
-          handle_output "ecs_service_name"
-          handle_output "environment_file_name"
-          handle_output "env_file_bucket_name"
-          
-          # Special handling for IMAGE_NAME as it's used as job output
-          IMAGE_NAME=$(terraform output -raw image_name 2>/dev/null || echo "")
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
-          echo "IMAGE_NAME<<EOF" >> $GITHUB_OUTPUT
-          echo "$IMAGE_NAME" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Print GITHUB_ENV contents
-        run: cat $GITHUB_ENV
+          for output in "${outputs[@]}"; do
+            value=$(terraform output -raw $output 2>/dev/null || echo "")
+            echo "$output=$value" >> $GITHUB_OUTPUT
+          done
 
   create_ecr_repository:
-    name: Create ECR repository
-    runs-on: ubuntu-latest
+    name: Create ECR Repository
     needs: deploy_pipeline
-    if: ${{ needs.deploy_pipeline.outputs.TERRAFORM_ACTION == 'apply' }}
+   
+    runs-on: ubuntu-latest
     steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+      - uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Check if ECR repository exists
-        id: check_repo
+      - name: Create Repository
         run: |
-          REPO_NAME="${{ needs.deploy_pipeline.outputs.IMAGE_NAME }}"
-          echo "Checking repository: $REPO_NAME"
-          
-          if aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
-            echo "Repository exists"
-            echo "repo_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "Repository does not exist"
-            echo "repo_exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create ECR repository
-        if: ${{ steps.check_repo.outputs.repo_exists == 'false' }}
-        run: |
-          REPO_NAME="${{ needs.deploy_pipeline.outputs.IMAGE_NAME }}"
-          echo "Creating repository: $REPO_NAME"
-          
           aws ecr create-repository \
-            --repository-name "$REPO_NAME" \
-            --image-tag-mutability MUTABLE \
+            --repository-name "${{ needs.deploy_pipeline.outputs.tf_image_name }}" \
             --image-scanning-configuration scanOnPush=true \
-            --encryption-configuration encryptionType=AES256
-          
-          echo "Repository created successfully"
+            --encryption-configuration encryptionType=AES256 || \
+          echo "Repository may already exist"
