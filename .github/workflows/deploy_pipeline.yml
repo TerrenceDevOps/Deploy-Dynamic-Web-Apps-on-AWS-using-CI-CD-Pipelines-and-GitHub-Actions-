@@ -7,7 +7,7 @@ on:
 env:
   AWS_REGION: us-east-1
   # change to 'apply' or 'destroy' as needed
-  TERRAFORM_ACTION: destroy
+  TERRAFORM_ACTION: apply
 
 jobs:
   deploy_pipeline:
