@@ -13,8 +13,8 @@ jobs:
     name: Deploy Infrastructure
     runs-on: ubuntu-latest
     outputs:
-      image_name: ${{ steps.extract_outputs.outputs.image_name }}
-      rds_endpoint: ${{ steps.extract_outputs.outputs.rds_endpoint }}
+      tf_image_name: ${{ steps.extract_outputs.outputs.tf_image_name }}
+      tf_rds_endpoint: ${{ steps.extract_outputs.outputs.tf_rds_endpoint }}
     
     steps:
       - name: Checkout code
@@ -46,47 +46,53 @@ jobs:
             terraform destroy -auto-approve
           fi
 
-      - name: Extract Terraform Outputs
+      - name: Extract and Set Outputs
         id: extract_outputs
         if: ${{ env.TERRAFORM_ACTION == 'apply' }}
         working-directory: ./iac
         run: |
-          echo "image_name=$(terraform output -raw image_name || echo 'null')" >> $GITHUB_OUTPUT
-          echo "rds_endpoint=$(terraform output -raw rds_endpoint || echo 'null')" >> $GITHUB_OUTPUT
-          echo "domain_name=$(terraform output -raw domain_name || echo 'null')" >> $GITHUB_OUTPUT
+          # Capture outputs to variables first
+          IMAGE_NAME=$(terraform output -raw image_name 2>/dev/null || echo '')
+          RDS_ENDPOINT=$(terraform output -raw rds_endpoint 2>/dev/null || echo '')
+          DOMAIN_NAME=$(terraform output -raw domain_name 2>/dev/null || echo '')
+  
+          # Set outputs using GitHub's strict format
+          echo "tf_image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "tf_rds_endpoint=${RDS_ENDPOINT}" >> $GITHUB_OUTPUT
+          echo "tf_domain_name=${DOMAIN_NAME}" >> $GITHUB_OUTPUT
+  
+          # Debug output
+          echo "::group::Extracted Output Values"
+          echo "Image Name: ${IMAGE_NAME}"
+          echo "RDS Endpoint: ${RDS_ENDPOINT}"
+          echo "Domain Name: ${DOMAIN_NAME}"
+          echo "::endgroup::"
 
-      - name: Show Extracted Outputs
-        run: |
-          echo "Extracted outputs:"
-          echo "Image Name: ${{ steps.extract_outputs.outputs.image_name }}"
-          echo "RDS Endpoint: ${{ steps.extract_outputs.outputs.rds_endpoint }}"
-          echo "Domain Name: ${{ steps.extract_outputs.outputs.domain_name }}"
-
-  manage_ecr_repository:
-    name: Manage ECR Repository
-    needs: deploy_infrastructure
-    if: ${{ needs.deploy_infrastructure.outputs.image_name != 'null' }}
-    runs-on: ubuntu-latest
+ 
+     manage_ecr:
+      name: Manage ECR Repository
+      needs: deploy_infrastructure
+      if: ${{ env.TERRAFORM_ACTION == 'apply' && needs.deploy_infrastructure.outputs.tf_image_name != '' }}
+      runs-on: ubuntu-latest
+      steps:
+        - name: Configure AWS credentials
+          uses: aws-actions/configure-aws-credentials@v2
+          with:
+            aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws-region: ${{ env.AWS_REGION }}
     
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Create or Verify ECR Repository
-        run: |
-          REPO_NAME="${{ needs.deploy_infrastructure.outputs.image_name }}"
-          
-          # Check if repository exists
-          if aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
-            echo "Repository $REPO_NAME already exists"
-          else
-            echo "Creating repository $REPO_NAME"
-            aws ecr create-repository \
-              --repository-name "$REPO_NAME" \
-              --image-scanning-configuration scanOnPush=true \
-              --encryption-configuration encryptionType=AES256
-          fi
+        - name: Create ECR Repository if Needed
+          run: |
+            REPO_NAME="${{ needs.deploy_infrastructure.outputs.tf_image_name }}"
+            
+            # Check if repository exists
+            if ! aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
+              echo "Creating ECR repository: $REPO_NAME"
+              aws ecr create-repository \
+                --repository-name "$REPO_NAME" \
+                --image-scanning-configuration scanOnPush=true \
+                --encryption-configuration encryptionType=AES256
+            else
+              echo "ECR repository already exists: $REPO_NAME"
+            fi
