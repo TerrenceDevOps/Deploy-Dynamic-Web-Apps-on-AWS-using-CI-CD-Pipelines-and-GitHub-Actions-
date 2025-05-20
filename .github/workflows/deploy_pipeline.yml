@@ -71,7 +71,7 @@ jobs:
     needs: deploy_infrastructure
     runs-on: ubuntu-latest
     env:
-      AWS_REGION: ${{ env.AWS_REGION }}
+      AWS_REGION: us-east-1
       TERRAFORM_ACTION: ${{ needs.deploy_infrastructure.outputs.terraform_action }}
       IMAGE_NAME: ${{ needs.deploy_infrastructure.outputs.tf_image_name }}
     if: ${{ needs.deploy_infrastructure.outputs.tf_image_name != '' }}
