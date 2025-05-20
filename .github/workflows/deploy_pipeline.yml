@@ -1,4 +1,4 @@
-name: Deploy Pipeline
+name: AWS Infrastructure Deployment
 
 on:
   push:
@@ -6,17 +6,20 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply  # change to 'destroy' when needed
+  TERRAFORM_ACTION: apply  # Can be changed to 'destroy'
 
 jobs:
-  deploy_pipeline:
-    name: Deploy AWS Infrastructure
+  deploy_infrastructure:
+    name: Deploy Infrastructure
     runs-on: ubuntu-latest
     outputs:
-      tf_image_name: ${{ steps.extract_outputs.outputs.image_name }}
+      image_name: ${{ steps.extract_outputs.outputs.image_name }}
+      rds_endpoint: ${{ steps.extract_outputs.outputs.rds_endpoint }}
+    
     steps:
-      - uses: actions/checkout@v3
-        
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -43,40 +46,47 @@ jobs:
             terraform destroy -auto-approve
           fi
 
-      - name: Extract Outputs
+      - name: Extract Terraform Outputs
         id: extract_outputs
         if: ${{ env.TERRAFORM_ACTION == 'apply' }}
         working-directory: ./iac
         run: |
-          # Simplified output handling without GITHUB_ENV
-          outputs=(
-            "image_name"
-            "domain_name"
-            "rds_endpoint"
-            "image_tag"
-          )
-          
-          for output in "${outputs[@]}"; do
-            value=$(terraform output -raw $output 2>/dev/null || echo "")
-            echo "$output=$value" >> $GITHUB_OUTPUT
-          done
+          echo "image_name=$(terraform output -raw image_name || echo 'null')" >> $GITHUB_OUTPUT
+          echo "rds_endpoint=$(terraform output -raw rds_endpoint || echo 'null')" >> $GITHUB_OUTPUT
+          echo "domain_name=$(terraform output -raw domain_name || echo 'null')" >> $GITHUB_OUTPUT
 
-  create_ecr_repository:
-    name: Create ECR Repository
-    needs: deploy_pipeline
-   
+      - name: Show Extracted Outputs
+        run: |
+          echo "Extracted outputs:"
+          echo "Image Name: ${{ steps.extract_outputs.outputs.image_name }}"
+          echo "RDS Endpoint: ${{ steps.extract_outputs.outputs.rds_endpoint }}"
+          echo "Domain Name: ${{ steps.extract_outputs.outputs.domain_name }}"
+
+  manage_ecr_repository:
+    name: Manage ECR Repository
+    needs: deploy_infrastructure
+    if: ${{ needs.deploy_infrastructure.outputs.image_name != 'null' }}
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: aws-actions/configure-aws-credentials@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Create Repository
+      - name: Create or Verify ECR Repository
         run: |
-          aws ecr create-repository \
-            --repository-name "${{ needs.deploy_pipeline.outputs.tf_image_name }}" \
-            --image-scanning-configuration scanOnPush=true \
-            --encryption-configuration encryptionType=AES256 || \
-          echo "Repository may already exist"
+          REPO_NAME="${{ needs.deploy_infrastructure.outputs.image_name }}"
+          
+          # Check if repository exists
+          if aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
+            echo "Repository $REPO_NAME already exists"
+          else
+            echo "Creating repository $REPO_NAME"
+            aws ecr create-repository \
+              --repository-name "$REPO_NAME" \
+              --image-scanning-configuration scanOnPush=true \
+              --encryption-configuration encryptionType=AES256
+          fi
