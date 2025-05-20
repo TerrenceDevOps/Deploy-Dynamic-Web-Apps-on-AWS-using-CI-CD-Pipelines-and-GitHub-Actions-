@@ -16,13 +16,12 @@ jobs:
     outputs:
       IMAGE_NAME: ${{ steps.extract_outputs.outputs.IMAGE_NAME }}
       TERRAFORM_ACTION: ${{ env.TERRAFORM_ACTION }}
-      AWS_REGION: ${{ env.AWS_REGION }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v2  # Updated to v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -31,19 +30,37 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.1.7
+          terraform_version: 1.5.7  # Updated to a more recent version
 
       - name: Terraform Init
         working-directory: ./iac
-        run: terraform init
+        run: terraform init -input=false
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ env.AWS_REGION }}
 
+      - name: Terraform Format
+        working-directory: ./iac
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        working-directory: ./iac
+        run: terraform validate
+
+      - name: Terraform Plan (Dry Run)
+        if: ${{ env.TERRAFORM_ACTION == 'apply' }}
+        working-directory: ./iac
+        run: terraform plan -input=false -out=tfplan
+
       - name: Terraform Apply/Destroy
         working-directory: ./iac
-        run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
+        run: |
+          if [ "${{ env.TERRAFORM_ACTION }}" == "apply" ]; then
+            terraform apply -input=false -auto-approve tfplan
+          else
+            terraform destroy -input=false -auto-approve
+          fi
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -54,48 +71,40 @@ jobs:
         if: ${{ env.TERRAFORM_ACTION == 'apply' }}
         working-directory: ./iac
         run: |
-          IMAGE_NAME=$(terraform output -raw image_name 2>/dev/null || echo "")
-          DOMAIN_NAME=$(terraform output -raw domain_name 2>/dev/null || echo "")
-          RDS_ENDPOINT=$(terraform output -raw rds_endpoint 2>/dev/null || echo "")
-          IMAGE_TAG=$(terraform output -raw image_tag 2>/dev/null || echo "")
-          PRIVATE_DATA_SUBNET_AZ1_ID=$(terraform output -raw private_data_subnet_az1_id 2>/dev/null || echo "")
-          RUNNER_SECURITY_GROUP_ID=$(terraform output -raw runner_security_group_id 2>/dev/null || echo "")
-          TASK_DEFINITION_NAME=$(terraform output -raw task_definition_name 2>/dev/null || echo "")
-          ECS_CLUSTER_NAME=$(terraform output -raw ecs_cluster_name 2>/dev/null || echo "")
-          ECS_SERVICE_NAME=$(terraform output -raw ecs_service_name 2>/dev/null || echo "")
-          ENVIRONMENT_FILE_NAME=$(terraform output -raw environment_file_name 2>/dev/null || echo "")
-          ENV_FILE_BUCKET_NAME=$(terraform output -raw env_file_bucket_name 2>/dev/null || echo "")
-
-          # Export to $GITHUB_ENV for other steps in this job
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
-          echo "DOMAIN_NAME=$DOMAIN_NAME" >> $GITHUB_ENV
-          echo "RDS_ENDPOINT=$RDS_ENDPOINT" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-          echo "PRIVATE_DATA_SUBNET_AZ1_ID=$PRIVATE_DATA_SUBNET_AZ1_ID" >> $GITHUB_ENV
-          echo "RUNNER_SECURITY_GROUP_ID=$RUNNER_SECURITY_GROUP_ID" >> $GITHUB_ENV
-          echo "TASK_DEFINITION_NAME=$TASK_DEFINITION_NAME" >> $GITHUB_ENV
-          echo "ECS_CLUSTER_NAME=$ECS_CLUSTER_NAME" >> $GITHUB_ENV
-          echo "ECS_SERVICE_NAME=$ECS_SERVICE_NAME" >> $GITHUB_ENV
-          echo "ENVIRONMENT_FILE_NAME=$ENVIRONMENT_FILE_NAME" >> $GITHUB_ENV
-          echo "ENV_FILE_BUCKET_NAME=$ENV_FILE_BUCKET_NAME" >> $GITHUB_ENV
-
-          # Set job output
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          # Function to safely handle outputs
+          handle_output() {
+            local output_name=$1
+            local output_value=$(terraform output -raw $output_name 2>/dev/null || echo "")
+            echo "$output_name=$output_value" >> $GITHUB_ENV
+            echo "$output_name=$output_value" >> $GITHUB_OUTPUT
+            return 0
+          }
+          
+          # Set outputs
+          handle_output "IMAGE_NAME"
+          handle_output "domain_name"
+          handle_output "rds_endpoint"
+          handle_output "image_tag"
+          handle_output "private_data_subnet_az1_id"
+          handle_output "runner_security_group_id"
+          handle_output "task_definition_name"
+          handle_output "ecs_cluster_name"
+          handle_output "ecs_service_name"
+          handle_output "environment_file_name"
+          handle_output "env_file_bucket_name"
 
       - name: Print GITHUB_ENV contents
+        if: ${{ env.TERRAFORM_ACTION == 'apply' }}
         run: cat $GITHUB_ENV
 
   create_ecr_repository:
-    name: Create ECR repository
+    name: Create ECR Repository
     runs-on: ubuntu-latest
     needs: deploy_pipeline
-    if: ${{ needs.deploy_pipeline.outputs.TERRAFORM_ACTION == 'apply' && needs.deploy_pipeline.outputs.IMAGE_NAME != '' }}
-    env:
-      AWS_REGION: ${{ needs.deploy_pipeline.outputs.AWS_REGION }}
-      IMAGE_NAME: ${{ needs.deploy_pipeline.outputs.IMAGE_NAME }}
+    if: ${{ needs.deploy_pipeline.outputs.TERRAFORM_ACTION == 'apply' }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -104,16 +113,28 @@ jobs:
       - name: Check if ECR repository exists
         id: check_repo
         run: |
-          set +e
-          aws ecr describe-repositories --repository-names "$IMAGE_NAME" >/dev/null 2>&1
-          if [ $? -eq 0 ]; then
+          REPO_NAME="${{ needs.deploy_pipeline.outputs.IMAGE_NAME }}"
+          echo "Checking repository: $REPO_NAME"
+          
+          if aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
+            echo "Repository exists"
             echo "repo_exists=true" >> $GITHUB_OUTPUT
           else
+            echo "Repository does not exist"
             echo "repo_exists=false" >> $GITHUB_OUTPUT
           fi
-          set -e
 
-      - name: Create ECR repository if not exists
-        if: ${{ steps.check_repo.outputs.repo_exists != 'true' }}
+      - name: Create ECR repository
+        if: ${{ steps.check_repo.outputs.repo_exists == 'false' }}
         run: |
-          aws ecr create-repository --repository-name "$IMAGE_NAME"
+          REPO_NAME="${{ needs.deploy_pipeline.outputs.IMAGE_NAME }}"
+          echo "Creating repository: $REPO_NAME"
+          
+          # Create repository with appropriate permissions and settings
+          aws ecr create-repository \
+            --repository-name "$REPO_NAME" \
+            --image-tag-mutability MUTABLE \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=AES256
+          
+          echo "Repository created successfully"
