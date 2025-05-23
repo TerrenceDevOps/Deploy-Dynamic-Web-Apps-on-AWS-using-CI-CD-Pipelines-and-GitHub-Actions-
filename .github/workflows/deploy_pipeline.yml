@@ -23,8 +23,6 @@ jobs:
           aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-
-
   # Build AWS infrastructure
   deploy_aws_infrastructure:
     name: Build AWS infrastructure
@@ -37,7 +35,7 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version:  1.6.6
+          terraform_version: 1.6.6
 
       - name: Run Terraform initialize
         working-directory: ./iac
@@ -47,82 +45,22 @@ jobs:
         working-directory: ./iac
         run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
 
-      - name: Get Terraform output image name
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: 
-        run: |
-          IMAGE_NAME_VALUE=$(terraform output -raw image_name | grep -Eo "^[^:]+" | tail -n 1)
-          echo "IMAGE_NAME=$IMAGE_NAME_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output domain name
+      - name: Get Terraform outputs
         if: env.TERRAFORM_ACTION == 'apply'
         working-directory: ./iac
         run: |
-          DOMAIN_NAME_VALUE=$(terraform output -raw domain_name | grep -Eo "^[^:]+" | tail -n 1)
-          echo "DOMAIN_NAME=$DOMAIN_NAME_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output RDS endpoint
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          RDS_ENDPOINT_VALUE=$(terraform output -raw rds_endpoint | grep -Eo "^[^:]+" | tail -n 1)
-          echo "RDS_ENDPOINT=$RDS_ENDPOINT_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output image tag
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          IMAGE_TAG_VALUE=$(terraform output -raw image_tag | grep -Eo "^[^:]+" | tail -n 1)
-          echo "IMAGE_TAG=$IMAGE_TAG_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output private data subnet az1 id
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          PRIVATE_DATA_SUBNET_AZ1_ID_VALUE=$(terraform output -raw private_data_subnet_az1_id | grep -Eo "^[^:]+" | tail -n 1)
-          echo "PRIVATE_DATA_SUBNET_AZ1_ID=$PRIVATE_DATA_SUBNET_AZ1_ID_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output runner security group id
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          RUNNER_SECURITY_GROUP_ID_VALUE=$(terraform output -raw runner_security_group_id | grep -Eo "^[^:]+" | tail -n 1)
-          echo "RUNNER_SECURITY_GROUP_ID=$RUNNER_SECURITY_GROUP_ID_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output task definition name
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          TASK_DEFINITION_NAME_VALUE=$(terraform output -raw task_definition_name | grep -Eo "^[^:]+" | tail -n 1)
-          echo "TASK_DEFINITION_NAME=$TASK_DEFINITION_NAME_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output ecs cluster name
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          ECS_CLUSTER_NAME_VALUE=$(terraform output -raw ecs_cluster_name | grep -Eo "^[^:]+" | tail -n 1)
-          echo "ECS_CLUSTER_NAME=$ECS_CLUSTER_NAME_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output ecs service name
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          ECS_SERVICE_NAME_VALUE=$(terraform output -raw ecs_service_name | grep -Eo "^[^:]+" | tail -n 1)
-          echo "ECS_SERVICE_NAME=$ECS_SERVICE_NAME_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output environment file name
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          ENVIRONMENT_FILE_NAME_VALUE=$(terraform output -raw environment_file_name | grep -Eo "^[^:]+" | tail -n 1)
-          echo "ENVIRONMENT_FILE_NAME=$ENVIRONMENT_FILE_NAME_VALUE" >> $GITHUB_ENV
-
-      - name: Get Terraform output env file bucket name
-        if: env.TERRAFORM_ACTION == 'apply'
-        working-directory: ./iac
-        run: |
-          ENV_FILE_BUCKET_NAME_VALUE=$(terraform output -raw env_file_bucket_name | grep -Eo "^[^:]+" | tail -n 1)
-          echo "ENV_FILE_BUCKET_NAME=$ENV_FILE_BUCKET_NAME_VALUE" >> $GITHUB_ENV
+          echo "Fetching Terraform outputs..."
+          echo "IMAGE_NAME=$(terraform output -raw image_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "DOMAIN_NAME=$(terraform output -raw domain_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "RDS_ENDPOINT=$(terraform output -raw rds_endpoint | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$(terraform output -raw image_tag | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "PRIVATE_DATA_SUBNET_AZ1_ID=$(terraform output -raw private_data_subnet_az1_id | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "RUNNER_SECURITY_GROUP_ID=$(terraform output -raw runner_security_group_id | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "TASK_DEFINITION_NAME=$(terraform output -raw task_definition_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ECS_CLUSTER_NAME=$(terraform output -raw ecs_cluster_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ECS_SERVICE_NAME=$(terraform output -raw ecs_service_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ENVIRONMENT_FILE_NAME=$(terraform output -raw environment_file_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ENV_FILE_BUCKET_NAME=$(terraform output -raw env_file_bucket_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
 
       - name: Print GITHUB_ENV contents
         run: cat $GITHUB_ENV
@@ -140,35 +78,56 @@ jobs:
       ecs_service_name: ${{ env.ECS_SERVICE_NAME }}
       environment_file_name: ${{ env.ENVIRONMENT_FILE_NAME }}
       env_file_bucket_name: ${{ env.ENV_FILE_BUCKET_NAME }}
-  
 
   # Create ECR repository
   create_ecr_repository:
     name: Create ECR repository
-    needs:
-      - configure_aws_credentials
-      - deploy_aws_infrastructure
-    if: needs.deploy_aws_infrastructure.outputs.terraform_action != 'destroy'
+    needs: deploy_aws_infrastructure
+    if: needs.deploy_aws_infrastructure.outputs.terraform_action == 'apply'
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set IMAGE_NAME from output
-        run: echo "IMAGE_NAME=${{ needs.deploy_aws_infrastructure.outputs.image_name }}" >> $GITHUB_ENV
+      - name: Sanitize and validate IMAGE_NAME
+        run: |
+          RAW_IMAGE_NAME="${{ needs.deploy_aws_infrastructure.outputs.image_name }}"
+          echo "Raw IMAGE_NAME: $RAW_IMAGE_NAME"
+
+          SANITIZED_NAME=$(echo "$RAW_IMAGE_NAME" | \
+            tr '[:upper:]' '[:lower:]' | \
+            sed 's/[^a-z0-9._/-]/-/g' | \
+            sed 's/[-_]\+/-/g' | \
+            sed 's/^[-_]*//;s/[-_]*$//')
+
+          if [[ -z "$SANITIZED_NAME" ]]; then
+            echo "Error: Image name cannot be empty after sanitization"
+            exit 1
+          fi
+
+          if [[ ! "$SANITIZED_NAME" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$ ]]; then
+            echo "Error: Sanitized name '$SANITIZED_NAME' still doesn't meet ECR requirements"
+            exit 1
+          fi
+
+          echo "Sanitized IMAGE_NAME: $SANITIZED_NAME"
+          echo "IMAGE_NAME=$SANITIZED_NAME" >> $GITHUB_ENV
 
       - name: Check if ECR repository exists
         run: |
           echo "Checking if ECR repo exists: $IMAGE_NAME"
-          REPO_EXISTS=$(aws ecr describe-repositories --repository-names "$IMAGE_NAME" 2>/dev/null || echo "not_found")
-          if echo "$REPO_EXISTS" | grep -q '"repositoryName"'; then
+          set +e
+          REPO_CHECK=$(aws ecr describe-repositories --repository-names "$IMAGE_NAME" 2>&1)
+          REPO_EXIT_CODE=$?
+          set -e
+
+          if [ $REPO_EXIT_CODE -eq 0 ]; then
+            echo "Repository exists"
             echo "REPO_EXISTS=true" >> $GITHUB_ENV
           else
+            echo "Repository does not exist or error occurred: $REPO_CHECK"
             echo "REPO_EXISTS=false" >> $GITHUB_ENV
           fi
-        env:
-          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
 
       - name: Create ECR repository if not exists
         if: env.REPO_EXISTS == 'false'
@@ -177,6 +136,12 @@ jobs:
           aws ecr create-repository \
             --repository-name "$IMAGE_NAME" \
             --image-scanning-configuration scanOnPush=true \
-            --encryption-configuration encryptionType=AES256
-        env:
-          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
+            --encryption-configuration encryptionType=AES256 \
+            --region $AWS_REGION
+          echo "ECR repository '$IMAGE_NAME' created successfully"
+
+      - name: Set repository URI output
+        run: |
+          REPO_URI=$(aws ecr describe-repositories --repository-names "$IMAGE_NAME" --query 'repositories[0].repositoryUri' --output text)
+          echo "ECR_REPOSITORY_URI=$REPO_URI" >> $GITHUB_ENV
+          echo "Repository URI: $REPO_URI"
