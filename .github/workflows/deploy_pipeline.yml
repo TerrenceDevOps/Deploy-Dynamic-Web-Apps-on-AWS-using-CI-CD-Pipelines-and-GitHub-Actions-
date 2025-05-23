@@ -1,102 +1,24 @@
-name: AWS Infrastructure Deployment
+name: Deploy Pipeline
 
 on:
   push:
     branches: [main]
 
 env:
+  AWS_ACCESS_KEY_ID: ${ { secrets.AWS_ACCESS_KEY_ID } }
+  AWS_SECRET_ACCESS_KEY: ${ { secrets.AWS_SECRET_ACCESS_KEY }
   AWS_REGION: us-east-1
-  TERRAFORM_ACTION: apply  # Can be changed to 'destroy'
 
 jobs:
-  deploy_infrastructure:
-    name: Deploy Infrastructure
+  # Configure AWS credentials 
+  configure_aws_credentials:
+    name: Configure AWS credentials
     runs-on: ubuntu-latest
-    outputs:
-      tf_image_name: ${{ steps.extract_outputs.outputs.tf_image_name }}
-      tf_rds_endpoint: ${{ steps.extract_outputs.outputs.tf_rds_endpoint }}
-      terraform_action: ${{ env.TERRAFORM_ACTION }}
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${ { env.AWS_ACCESS_KEY_ID } }
+          aws-secret-access-key: ${ { env.AWS_SECRET_ACCESS_KEY } }
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.5.7
-
-      - name: Terraform Init
-        working-directory: ./iac
-        run: terraform init -input=false
-
-      - name: Terraform Apply/Destroy
-        working-directory: ./iac
-        run: |
-          if [ "${{ env.TERRAFORM_ACTION }}" = "apply" ]; then
-            terraform plan -out=tfplan
-            terraform apply -auto-approve tfplan
-          else
-            terraform destroy -auto-approve
-          fi
-
-      - name: Extract and Set Outputs
-        id: extract_outputs
-        if: ${{ env.TERRAFORM_ACTION == 'apply' }}
-        working-directory: ./iac
-        run: |
-          IMAGE_NAME=$(terraform output -raw image_name 2>/dev/null || echo '')
-          RDS_ENDPOINT=$(terraform output -raw rds_endpoint 2>/dev/null || echo '')
-          DOMAIN_NAME=$(terraform output -raw domain_name 2>/dev/null || echo '')
-
-          echo "tf_image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "tf_rds_endpoint=${RDS_ENDPOINT}" >> $GITHUB_OUTPUT
-          echo "tf_domain_name=${DOMAIN_NAME}" >> $GITHUB_OUTPUT
-
-          echo "::group::Extracted Output Values"
-          echo "Image Name: ${IMAGE_NAME}"
-          echo "RDS Endpoint: ${RDS_ENDPOINT}"
-          echo "Domain Name: ${DOMAIN_NAME}"
-          echo "::endgroup::"
-
-  manage_ecr:
-    name: Manage ECR Repository
-    needs: deploy_infrastructure
-    runs-on: ubuntu-latest
-    env:
-      AWS_REGION: us-east-1
-      TERRAFORM_ACTION: ${{ needs.deploy_infrastructure.outputs.terraform_action }}
-      IMAGE_NAME: ${{ needs.deploy_infrastructure.outputs.tf_image_name }}
-    if: ${{ needs.deploy_infrastructure.outputs.tf_image_name != '' }}
-    steps:
-      - name: Skip if TERRAFORM_ACTION is not 'apply'
-        if: ${{ env.TERRAFORM_ACTION != 'apply' }}
-        run: echo "Terraform action is not 'apply'; skipping ECR management." && exit 0
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Create ECR Repository if Needed
-        run: |
-          REPO_NAME="${IMAGE_NAME}"
-
-          if ! aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
-            echo "Creating ECR repository: $REPO_NAME"
-            aws ecr create-repository \
-              --repository-name "$REPO_NAME" \
-              --image-scanning-configuration scanOnPush=true \
-              --encryption-configuration encryptionType=AES256
-          else
-            echo "ECR repository already exists: $REPO_NAME"
-          fi
+          
