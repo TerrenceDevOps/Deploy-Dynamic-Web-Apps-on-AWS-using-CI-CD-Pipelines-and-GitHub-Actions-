@@ -11,7 +11,6 @@ env:
   TERRAFORM_ACTION: apply
 
 jobs:
-  # Configure AWS credentials 
   configure_aws_credentials:
     name: Configure AWS credentials
     runs-on: ubuntu-latest
@@ -23,7 +22,6 @@ jobs:
           aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-  # Build AWS infrastructure
   deploy_aws_infrastructure:
     name: Build AWS infrastructure
     needs: configure_aws_credentials
@@ -79,7 +77,6 @@ jobs:
       environment_file_name: ${{ env.ENVIRONMENT_FILE_NAME }}
       env_file_bucket_name: ${{ env.ENV_FILE_BUCKET_NAME }}
 
-  # Create ECR repository
   create_ecr_repository:
     name: Create ECR repository
     needs: deploy_aws_infrastructure
@@ -146,10 +143,9 @@ jobs:
           echo "ECR_REPOSITORY_URI=$REPO_URI" >> $GITHUB_ENV
           echo "Repository URI: $REPO_URI"
 
-  # Start self-hosted EC2 runner
   start_runner:
     name: Start self-hosted EC2 runner
-    needs: 
+    needs:
       - configure_aws_credentials
       - deploy_aws_infrastructure
     if: needs.deploy_aws_infrastructure.outputs.terraform_action == 'apply'
@@ -171,15 +167,15 @@ jobs:
         uses: machulav/ec2-github-runner@v2
         with:
           mode: start
-          github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN_TOKEN }}
+          github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           ec2-image-id: ami-0f6d2920102de908a
           ec2-instance-type: t2.micro
           subnet-id: ${{ needs.deploy_aws_infrastructure.outputs.private_data_subnet_az1_id }}
-          security-group-id: ${{ needs.configure_aws_credentials.outputs.runner_security_group_id }}
-          aws-resource-tags: > 
+          security-group-id: ${{ needs.deploy_aws_infrastructure.outputs.runner_security_group_id }}
+          aws-resource-tags: >
             [
               {"Key": "Name", "Value": "ec2-github-runner"},
-              {"Key": "GitHubRepository", "Value": "${{ github.repository }}"}
+              {"Key": "GitHubRepository", "Value": "${{ github.repository }}" }
             ]
 
     outputs:
