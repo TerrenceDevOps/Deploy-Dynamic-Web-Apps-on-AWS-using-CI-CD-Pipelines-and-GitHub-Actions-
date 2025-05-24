@@ -64,9 +64,6 @@ jobs:
           echo "ENVIRONMENT_FILE_NAME=$(terraform output -raw environment_file_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
           echo "ENV_FILE_BUCKET_NAME=$(terraform output -raw env_file_bucket_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
 
-      - name: Print GITHUB_ENV contents
-        run: cat $GITHUB_ENV
-
     outputs:
       terraform_action: ${{ env.TERRAFORM_ACTION }}
       image_name: ${{ env.IMAGE_NAME }}
@@ -93,59 +90,32 @@ jobs:
       - name: Sanitize and validate IMAGE_NAME
         run: |
           RAW_IMAGE_NAME="${{ needs.deploy_aws_infrastructure.outputs.image_name }}"
-          echo "Raw IMAGE_NAME: $RAW_IMAGE_NAME"
-
-          SANITIZED_NAME=$(echo "$RAW_IMAGE_NAME" | \
-            tr '[:upper:]' '[:lower:]' | \
-            sed 's/[^a-z0-9._/-]/-/g' | \
-            sed 's/[-_]\+/-/g' | \
-            sed 's/^[-_]*//;s/[-_]*$//')
+          SANITIZED_NAME=$(echo "$RAW_IMAGE_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._/-]/-/g' | sed 's/[-_]\+/-/g' | sed 's/^[-_]*//;s/[-_]*$//')
 
           if [[ -z "$SANITIZED_NAME" ]]; then
             echo "Error: Image name cannot be empty after sanitization"
             exit 1
           fi
 
-          if [[ ! "$SANITIZED_NAME" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$ ]]; then
-            echo "Error: Sanitized name '$SANITIZED_NAME' still doesn't meet ECR requirements"
-            exit 1
-          fi
-
-          echo "Sanitized IMAGE_NAME: $SANITIZED_NAME"
           echo "IMAGE_NAME=$SANITIZED_NAME" >> $GITHUB_ENV
 
       - name: Check if ECR repository exists
         run: |
-          echo "Checking if ECR repo exists: $IMAGE_NAME"
-          set +e
           REPO_CHECK=$(aws ecr describe-repositories --repository-names "$IMAGE_NAME" 2>&1)
-          REPO_EXIT_CODE=$?
-          set -e
-
-          if [ $REPO_EXIT_CODE -eq 0 ]; then
-            echo "Repository exists"
-            echo "REPO_EXISTS=true" >> $GITHUB_ENV
-          else
-            echo "Repository does not exist or error occurred: $REPO_CHECK"
+          if echo "$REPO_CHECK" | grep -q RepositoryNotFoundException; then
             echo "REPO_EXISTS=false" >> $GITHUB_ENV
+          else
+            echo "REPO_EXISTS=true" >> $GITHUB_ENV
           fi
 
       - name: Create ECR repository if not exists
         if: env.REPO_EXISTS == 'false'
         run: |
-          echo "Creating ECR repository: $IMAGE_NAME"
           aws ecr create-repository \
             --repository-name "$IMAGE_NAME" \
             --image-scanning-configuration scanOnPush=true \
             --encryption-configuration encryptionType=AES256 \
             --region $AWS_REGION
-          echo "ECR repository '$IMAGE_NAME' created successfully"
-
-      - name: Set repository URI output
-        run: |
-          REPO_URI=$(aws ecr describe-repositories --repository-names "$IMAGE_NAME" --query 'repositories[0].repositoryUri' --output text)
-          echo "ECR_REPOSITORY_URI=$REPO_URI" >> $GITHUB_ENV
-          echo "Repository URI: $REPO_URI"
 
   start_runner:
     name: Start self-hosted EC2 runner
@@ -158,7 +128,6 @@ jobs:
       - name: Check for running EC2 runner
         run: |
           instances=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=ec2-github-runner" "Name=instance-state-name,Values=running" --query 'Reservations[].Instances[].InstanceId' --output text)
-
           if [ -n "$instances" ]; then
             echo "runner-running=true" >> $GITHUB_ENV
           else
@@ -172,7 +141,7 @@ jobs:
         with:
           mode: start
           github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-          ec2-image-id: ami-0f6d2920102de908a
+          ec2-image-id: ami-02f949cb035864cfd  # ✅ Amazon Linux 2023 (fixes glibc issue)
           ec2-instance-type: t2.micro
           subnet-id: ${{ needs.deploy_aws_infrastructure.outputs.private_data_subnet_az1_id }}
           security-group-id: ${{ needs.deploy_aws_infrastructure.outputs.runner_security_group_id }}
@@ -205,8 +174,8 @@ jobs:
       - name: Build Docker image
         env:
           DOMAIN_NAME: ${{ needs.deploy_aws_infrastructure.outputs.domain_name }}
-          RDS_ENDPOINT: ${{ needs.deploy_aws_infrastructure.outputs.rds_endpoint }} 
-          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
+          RDS_ENDPOINT: ${{ needs.deploy_aws_infrastructure.outputs.rds_endpoint }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
         run: |
           docker build \
@@ -220,18 +189,12 @@ jobs:
           --build-arg RDS_DB_NAME=${{ secrets.RDS_DB_NAME }} \
           --build-arg RDS_DB_USERNAME=${{ secrets.RDS_DB_USERNAME }} \
           --build-arg RDS_DB_PASSWORD=${{ secrets.RDS_DB_PASSWORD }} \
-          -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
+          -t $IMAGE_NAME:$IMAGE_TAG .
 
       - name: Retag Docker image
-        env:
-          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
-          IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
         run: |
-          docker tag ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ${{ secrets.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.ECR_REGISTRY }}/$IMAGE_NAME:$IMAGE_TAG
 
       - name: Push Docker Image to Amazon ECR
-        env:
-          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
-          IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
         run: |
-          docker push ${{ secrets.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker push ${{ secrets.ECR_REGISTRY }}/$IMAGE_NAME:$IMAGE_TAG
