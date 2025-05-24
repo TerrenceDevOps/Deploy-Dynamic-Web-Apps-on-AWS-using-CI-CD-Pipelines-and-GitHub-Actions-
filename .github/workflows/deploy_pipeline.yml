@@ -13,9 +13,9 @@ env:
   REPOSITORY_NAME: application-repo
   WEB_FILE_ZIP: rentzone.zip
   WEB_FILE_UNZIP: rentzone
+
   FLYWAY_VERSION: 9.16.1
 
-# ======================= Configure AWS =======================
 jobs:
   configure_aws_credentials:
     name: Configure AWS credentials
@@ -28,11 +28,44 @@ jobs:
           aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-# ==================== Deploy Infrastructure ====================
   deploy_aws_infrastructure:
     name: Build AWS infrastructure
     needs: configure_aws_credentials
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.6.6
+
+      - name: Run Terraform initialize
+        working-directory: ./iac
+        run: terraform init
+
+      - name: Run Terraform apply/destroy
+        working-directory: ./iac
+        run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
+
+      - name: Get Terraform outputs
+        if: env.TERRAFORM_ACTION == 'apply'
+        working-directory: ./iac
+        run: |
+          echo "Fetching Terraform outputs..."
+          echo "IMAGE_NAME=$(terraform output -raw image_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "DOMAIN_NAME=$(terraform output -raw domain_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "RDS_ENDPOINT=$(terraform output -raw rds_endpoint | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$(terraform output -raw image_tag | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "PRIVATE_DATA_SUBNET_AZ1_ID=$(terraform output -raw private_data_subnet_az1_id | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "RUNNER_SECURITY_GROUP_ID=$(terraform output -raw runner_security_group_id | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "TASK_DEFINITION_NAME=$(terraform output -raw task_definition_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ECS_CLUSTER_NAME=$(terraform output -raw ecs_cluster_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ECS_SERVICE_NAME=$(terraform output -raw ecs_service_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ENVIRONMENT_FILE_NAME=$(terraform output -raw environment_file_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ENV_FILE_BUCKET_NAME=$(terraform output -raw env_file_bucket_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+
     outputs:
       terraform_action: ${{ env.TERRAFORM_ACTION }}
       image_name: ${{ env.IMAGE_NAME }}
@@ -46,86 +79,78 @@ jobs:
       ecs_service_name: ${{ env.ECS_SERVICE_NAME }}
       environment_file_name: ${{ env.ENVIRONMENT_FILE_NAME }}
       env_file_bucket_name: ${{ env.ENV_FILE_BUCKET_NAME }}
-    steps:
-      - uses: actions/checkout@v3
-      - uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.6.6
 
-      - run: terraform init
-        working-directory: ./iac
-
-      - run: terraform ${{ env.TERRAFORM_ACTION }} -auto-approve
-        working-directory: ./iac
-
-      - name: Set outputs from Terraform
-        if: env.TERRAFORM_ACTION == 'apply'
-        run: |
-          echo "IMAGE_NAME=$(terraform output -raw image_name)" >> $GITHUB_ENV
-          echo "DOMAIN_NAME=$(terraform output -raw domain_name)" >> $GITHUB_ENV
-          echo "RDS_ENDPOINT=$(terraform output -raw rds_endpoint)" >> $GITHUB_ENV
-          echo "IMAGE_TAG=$(terraform output -raw image_tag)" >> $GITHUB_ENV
-          echo "PRIVATE_DATA_SUBNET_AZ1_ID=$(terraform output -raw private_data_subnet_az1_id)" >> $GITHUB_ENV
-          echo "RUNNER_SECURITY_GROUP_ID=$(terraform output -raw runner_security_group_id)" >> $GITHUB_ENV
-          echo "TASK_DEFINITION_NAME=$(terraform output -raw task_definition_name)" >> $GITHUB_ENV
-          echo "ECS_CLUSTER_NAME=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_ENV
-          echo "ECS_SERVICE_NAME=$(terraform output -raw ecs_service_name)" >> $GITHUB_ENV
-          echo "ENVIRONMENT_FILE_NAME=$(terraform output -raw environment_file_name)" >> $GITHUB_ENV
-          echo "ENV_FILE_BUCKET_NAME=$(terraform output -raw env_file_bucket_name)" >> $GITHUB_ENV
-
-# ===================== Create ECR Repository =====================
   create_ecr_repository:
     name: Create ECR repository
     needs: deploy_aws_infrastructure
     if: needs.deploy_aws_infrastructure.outputs.terraform_action == 'apply'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - run: |
-          IMAGE_NAME="${{ needs.deploy_aws_infrastructure.outputs.image_name }}"
-          SANITIZED_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._/-]/-/g')
-          echo "IMAGE_NAME=$SANITIZED_NAME" >> $GITHUB_ENV
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - run: |
-          if ! aws ecr describe-repositories --repository-names "$IMAGE_NAME"; then
-            aws ecr create-repository --repository-name "$IMAGE_NAME" \
-              --image-scanning-configuration scanOnPush=true \
-              --encryption-configuration encryptionType=AES256
+      - name: Sanitize and validate IMAGE_NAME
+        run: |
+          RAW_IMAGE_NAME="${{ needs.deploy_aws_infrastructure.outputs.image_name }}"
+          SANITIZED_NAME=$(echo "$RAW_IMAGE_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._/-]/-/g' | sed 's/[-_]\+/-/g' | sed 's/^[-_]*//;s/[-_]*$//')
+
+          if [[ -z "$SANITIZED_NAME" ]]; then
+            echo "Error: Image name cannot be empty after sanitization"
+            exit 1
           fi
 
-# ===================== Start EC2 Self-hosted Runner =====================
+          echo "IMAGE_NAME=$SANITIZED_NAME" >> $GITHUB_ENV
+
+      - name: Check if ECR repository exists
+        run: |
+          REPO_CHECK=$(aws ecr describe-repositories --repository-names "$IMAGE_NAME" 2>&1)
+          if echo "$REPO_CHECK" | grep -q RepositoryNotFoundException; then
+            echo "REPO_EXISTS=false" >> $GITHUB_ENV
+          else
+            echo "REPO_EXISTS=true" >> $GITHUB_ENV
+          fi
+
+      - name: Create ECR repository if not exists
+        if: env.REPO_EXISTS == 'false'
+        run: |
+          aws ecr create-repository \
+            --repository-name "$IMAGE_NAME" \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=AES256 \
+            --region $AWS_REGION
+
   start_runner:
     name: Start self-hosted EC2 runner
-    needs: 
+    needs:
       - configure_aws_credentials
       - deploy_aws_infrastructure
     if: needs.deploy_aws_infrastructure.outputs.terraform_action == 'apply'
     runs-on: ubuntu-latest
-    outputs:
-      label: ${{ steps.set-output.outputs.label }}
-      ec2-instance-id: ${{ steps.set-output.outputs.ec2-instance-id }}
     steps:
-      - name: Check if EC2 runner exists
+      - name: Check for running EC2 runner
         id: check-runner
         run: |
-          instance_id=$(aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=ec2-github-runner" "Name=instance-state-name,Values=running" \
-            --query "Reservations[].Instances[].InstanceId" --output text)
-          if [[ -n "$instance_id" ]]; then
+          instances=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=ec2-github-runner" "Name=instance-state-name,Values=running" --query 'Reservations[].Instances[].InstanceId' --output text)
+          if [ -n "$instances" ]; then
             echo "runner_running=true" >> $GITHUB_ENV
-            echo "existing_instance=$instance_id" >> $GITHUB_ENV
+            echo "existing_instance=$instances" >> $GITHUB_ENV
           else
             echo "runner_running=false" >> $GITHUB_ENV
           fi
 
-      - name: Get Ubuntu AMI
+      - name: Get latest Ubuntu 22.04 LTS AMI
         if: env.runner_running != 'true'
         run: |
           UBUNTU_AMI_ID=$(aws ec2 describe-images \
             --owners 099720109477 \
-            --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" \
-            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' --output text)
+            --filters \
+              "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" \
+              "Name=state,Values=available" \
+            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+            --output text)
+
           echo "UBUNTU_AMI_ID=$UBUNTU_AMI_ID" >> $GITHUB_ENV
+          echo "Using Ubuntu 22.04 LTS AMI: $UBUNTU_AMI_ID"
 
       - name: Start EC2 runner
         if: env.runner_running != 'true'
@@ -138,13 +163,27 @@ jobs:
           ec2-instance-type: t3.small
           subnet-id: ${{ needs.deploy_aws_infrastructure.outputs.private_data_subnet_az1_id }}
           security-group-id: ${{ needs.deploy_aws_infrastructure.outputs.runner_security_group_id }}
+          aws-resource-tags: >
+            [
+              {"Key": "Name", "Value": "ec2-github-runner"},
+              {"Key": "GitHubRepository", "Value": "${{ github.repository }}" }
+            ]
 
-      - name: Set runner label
+      - name: Set runner label output
         id: set-output
         run: |
-          echo "label=self-hosted" >> $GITHUB_OUTPUT
+          if [ "${{ env.runner_running }}" == "true" ]; then
+            echo "label=self-hosted" >> $GITHUB_OUTPUT
+            echo "ec2-instance-id=${{ env.existing_instance }}" >> $GITHUB_OUTPUT
+          else
+            echo "label=${{ steps.start-ec2-runner.outputs.label }}" >> $GITHUB_OUTPUT
+            echo "ec2-instance-id=${{ steps.start-ec2-runner.outputs.ec2-instance-id }}" >> $GITHUB_OUTPUT
+          fi
 
-# =================== Build & Push Docker Image to ECR ===================
+    outputs:
+      label: ${{ steps.set-output.outputs.label }}
+      ec2-instance-id: ${{ steps.set-output.outputs.ec2-instance-id }}
+
   build_and_push_image:
     name: Build and push Docker image to ECR
     needs:
@@ -155,83 +194,125 @@ jobs:
     if: needs.deploy_aws_infrastructure.outputs.terraform_action != 'destroy'
     runs-on: ${{ needs.start_runner.outputs.label || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/amazon-ecr-login@v1
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install Docker deps
-        run: sudo apt-get update -y && sudo apt-get install -y curl unzip
+      - name: Update system and install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl unzip
 
-      - name: Build Docker image
+      - name: Install AWS CLI
+        run: |
+          if ! command -v aws &> /dev/null; then
+            echo "Installing AWS CLI..."
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+            rm -rf aws awscliv2.zip
+          else
+            echo "AWS CLI is already installed"
+          fi  
+
+  export_env_variables:
+    name: Create environment file and export to S3
+    needs:
+      - configure_aws_credentials
+      - deploy_aws_infrastructure
+      - start_runner
+      - build_and_push_image
+    if: needs.deploy_aws_infrastructure.outputs.terraform_action != 'destroy'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Export environment variable values to file
         env:
-          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
-          IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
           DOMAIN_NAME: ${{ needs.deploy_aws_infrastructure.outputs.domain_name }}
           RDS_ENDPOINT: ${{ needs.deploy_aws_infrastructure.outputs.rds_endpoint }}
-          RDS_DB_NAME: ${{ secrets.RDS_DB_NAME }}
-          RDS_DB_USERNAME: ${{ secrets.RDS_DB_USERNAME }}
-          RDS_DB_PASSWORD: ${{ secrets.RDS_DB_PASSWORD }}
+          ENVIRONMENT_FILE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.environment_file_name }}
+          GITHUB_USERNAME: ${{ env.GITHUB_USERNAME }}
+          REPOSITORY_NAME: ${{ env.REPOSITORY_NAME }}
+          WEB_FILE_ZIP: ${{ env.WEB_FILE_ZIP }}
+          WEB_FILE_UNZIP: ${{ env.WEB_FILE_UNZIP }}
         run: |
-          docker build \
-            --build-arg PERSONAL_ACCESS_TOKEN=$PERSONAL_ACCESS_TOKEN \
-            --build-arg DOMAIN_NAME=$DOMAIN_NAME \
-            --build-arg RDS_ENDPOINT=$RDS_ENDPOINT \
-            --build-arg RDS_DB_NAME=$RDS_DB_NAME \
-            --build-arg RDS_DB_USERNAME=$RDS_DB_USERNAME \
-            --build-arg RDS_DB_PASSWORD=$RDS_DB_PASSWORD \
-            -t $IMAGE_NAME:$IMAGE_TAG .
+          echo "PERSONAL_ACCESS_TOKEN=${{ secrets.PERSONAL_ACCESS_TOKEN }}" > ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "GITHUB_USERNAME=${{ env.GITHUB_USERNAME }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "REPOSITORY_NAME=${{ env.REPOSITORY_NAME }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "WEB_FILE_ZIP=${{ env.WEB_FILE_ZIP }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "WEB_FILE_UNZIP=${{ env.WEB_FILE_UNZIP }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "DOMAIN_NAME=${{ env.DOMAIN_NAME }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "RDS_ENDPOINT=${{ env.RDS_ENDPOINT }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "RDS_DB_NAME=${{ secrets.RDS_DB_NAME }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "RDS_DB_USERNAME=${{ secrets.RDS_DB_USERNAME }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
+          echo "RDS_DB_PASSWORD=${{ secrets.RDS_DB_PASSWORD }}" >> ${{ env.ENVIRONMENT_FILE_NAME }}
 
-      - name: Tag and Push to ECR
+      - name: Upload environment file to S3
         env:
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
-          IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
+          ENV_FILE_BUCKET_NAME: ${{ needs.deploy_aws_infrastructure.outputs.env_file_bucket_name }}
+          ENVIRONMENT_FILE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.environment_file_name }}
         run: |
-          REPO_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME
-          docker tag $IMAGE_NAME:$IMAGE_TAG $REPO_URI:$IMAGE_TAG
-          docker push $REPO_URI:$IMAGE_TAG
+          aws s3 cp $ENVIRONMENT_FILE_NAME s3://$ENV_FILE_BUCKET_NAME/
 
-# ================== Export Env File to S3 ==================
-  export_env_variables:
-    name: Export environment file to S3
-    needs:
-      - build_and_push_image
-      - deploy_aws_infrastructure
-    if: needs.deploy_aws_infrastructure.outputs.terraform_action != 'destroy'
+  create_td_revision:
+    name: Create new task definition revision
+    needs: deploy_aws_infrastructure
     runs-on: ubuntu-latest
+    outputs:
+      new_td_revision: ${{ steps.create_revision.outputs.new_td_revision }}
     steps:
-      - run: |
-          cat > ${{ needs.deploy_aws_infrastructure.outputs.environment_file_name }} <<EOF
-          DOMAIN_NAME=${{ needs.deploy_aws_infrastructure.outputs.domain_name }}
-          RDS_ENDPOINT=${{ needs.deploy_aws_infrastructure.outputs.rds_endpoint }}
-          RDS_DB_NAME=${{ secrets.RDS_DB_NAME }}
-          RDS_DB_USERNAME=${{ secrets.RDS_DB_USERNAME }}
-          RDS_DB_PASSWORD=${{ secrets.RDS_DB_PASSWORD }}
-          EOF
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-          aws s3 cp ${{ needs.deploy_aws_infrastructure.outputs.environment_file_name }} \
-            s3://${{ needs.deploy_aws_infrastructure.outputs.env_file_bucket_name }}/
-
-# ================== Update ECS Task ==================
-  update_ecs_task_definition:
-    name: Update ECS Task Definition
-    needs:
-      - export_env_variables
-      - deploy_aws_infrastructure
-    if: needs.deploy_aws_infrastructure.outputs.terraform_action != 'destroy'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Update ECS Task Definition
+      - name: Create new ECS task definition revision
+        id: create_revision
         env:
-          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
-          IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-          TASK_DEFINITION_NAME: ${{ needs.deploy_aws_infrastructure.outputs.task_definition_name }}
-          ECS_CLUSTER_NAME: ${{ needs.deploy_aws_infrastructure.outputs.ecs_cluster_name }}
-          ECS_SERVICE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.ecs_service_name }}
+          ECS_FAMILY: ${{ needs.deploy_aws_infrastructure.outputs.task_definition_name }}
+          ECS_IMAGE: ${{ secrets.ECR_REGISTRY }}/${{ needs.deploy_aws_infrastructure.outputs.image_name }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
         run: |
-          IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME:$IMAGE_TAG
-          aws ecs describe-task-definition --task-definition $TASK_DEFINITION_NAME > task-def.json
-          jq --arg IMAGE_URI "$IMAGE_URI" '.taskDefinition.containerDefinitions[0].image = $IMAGE_URI' task-def.json > new-task-def.json
-          NEW_TASK_DEF=$(aws ecs register-task-definition --cli-input-json file://new-task-def.json --query 'taskDefinition.taskDefinitionArn' --output text)
-          aws ecs update-service --cluster $ECS_CLUSTER_NAME --service $ECS_SERVICE_NAME --task-definition $NEW_TASK_DEF
+          TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition $ECS_FAMILY)
+
+          NEW_TASK_DEFINITION=$(echo "$TASK_DEFINITION" | jq --arg IMAGE "$ECS_IMAGE" \
+            '.taskDefinition
+              | .containerDefinitions[0].image = $IMAGE
+              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+
+          NEW_TASK_INFO=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEFINITION")
+
+          NEW_TD_REVISION=$(echo "$NEW_TASK_INFO" | jq '.taskDefinition.revision')
+
+          echo "new_td_revision=$NEW_TD_REVISION" >> $GITHUB_OUTPUT
+
+  restart_ecs_service:
+    name: Restart ECS service with new task definition revision
+    needs:
+      - create_td_revision
+      - deploy_aws_infrastructure
+    runs-on: ubuntu-latest
+    env:
+      ECS_CLUSTER_NAME: ${{ needs.deploy_aws_infrastructure.outputs.ecs_cluster_name }}
+      ECS_SERVICE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.ecs_service_name }}
+      TD_NAME: ${{ needs.deploy_aws_infrastructure.outputs.task_definition_name }}
+      NEW_TD_REVISION: ${{ needs.create_td_revision.outputs.new_td_revision }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update ECS service with new task definition revision
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER_NAME \
+            --service $ECS_SERVICE_NAME \
+            --task-definition $TD_NAME:$NEW_TD_REVISION \
+            --force-new-deployment
+
+
+
+
+
