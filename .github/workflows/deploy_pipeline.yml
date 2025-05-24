@@ -134,6 +134,17 @@ jobs:
             echo "runner-running=false" >> $GITHUB_ENV
           fi
 
+      - name: Get latest Amazon Linux 2023 AMI
+        run: |
+          LATEST_AMI=$(aws ec2 describe-images \
+            --owners amazon \
+            --filters \
+              "Name=name,Values=al2023-ami-*-x86_64" \
+              "Name=state,Values=available" \
+            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+            --output text)
+          echo "LATEST_AMI_ID=$LATEST_AMI" >> $GITHUB_ENV
+
       - name: Start EC2 runner
         if: env.runner-running != 'true'
         id: start-ec2-runner
@@ -141,8 +152,8 @@ jobs:
         with:
           mode: start
           github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-          ec2-image-id: ami-02f949cb035864cfd  # ✅ Amazon Linux 2023 (fixes glibc issue)
-          ec2-instance-type: t2.micro
+          ec2-image-id: ${{ env.LATEST_AMI_ID }}
+          ec2-instance-type: t3.small
           subnet-id: ${{ needs.deploy_aws_infrastructure.outputs.private_data_subnet_az1_id }}
           security-group-id: ${{ needs.deploy_aws_infrastructure.outputs.runner_security_group_id }}
           aws-resource-tags: >
@@ -163,21 +174,31 @@ jobs:
       - create_ecr_repository
       - start_runner
     if: needs.deploy_aws_infrastructure.outputs.terraform_action != 'destroy'
-    runs-on: self-hosted
+    runs-on: ${{ needs.start_runner.outputs.label }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # Updated to v4 for better compatibility
+
+      - name: Configure AWS credentials for EC2 runner
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws configure set default.region ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v1
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
 
       - name: Build Docker image
         env:
           DOMAIN_NAME: ${{ needs.deploy_aws_infrastructure.outputs.domain_name }}
           RDS_ENDPOINT: ${{ needs.deploy_aws_infrastructure.outputs.rds_endpoint }}
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
           IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
         run: |
+          # Sanitize image name
+          SANITIZED_IMAGE_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._/-]/-/g' | sed 's/[-_]\+/-/g' | sed 's/^[-_]*//;s/[-_]*$//')
+          
           docker build \
           --build-arg PERSONAL_ACCESS_TOKEN=${{ secrets.PERSONAL_ACCESS_TOKEN }} \
           --build-arg GITHUB_USERNAME=${{ env.GITHUB_USERNAME }} \
@@ -189,12 +210,31 @@ jobs:
           --build-arg RDS_DB_NAME=${{ secrets.RDS_DB_NAME }} \
           --build-arg RDS_DB_USERNAME=${{ secrets.RDS_DB_USERNAME }} \
           --build-arg RDS_DB_PASSWORD=${{ secrets.RDS_DB_PASSWORD }} \
-          -t $IMAGE_NAME:$IMAGE_TAG .
+          -t $SANITIZED_IMAGE_NAME:$IMAGE_TAG .
 
-      - name: Retag Docker image
+      - name: Tag and Push Docker Image to Amazon ECR
+        env:
+          IMAGE_NAME: ${{ needs.deploy_aws_infrastructure.outputs.image_name }}
+          IMAGE_TAG: ${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
         run: |
-          docker tag $IMAGE_NAME:$IMAGE_TAG ${{ secrets.ECR_REGISTRY }}/$IMAGE_NAME:$IMAGE_TAG
+          # Sanitize image name
+          SANITIZED_IMAGE_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._/-]/-/g' | sed 's/[-_]\+/-/g' | sed 's/^[-_]*//;s/[-_]*$//')
+          
+          docker tag $SANITIZED_IMAGE_NAME:$IMAGE_TAG ${{ secrets.ECR_REGISTRY }}/$SANITIZED_IMAGE_NAME:$IMAGE_TAG
+          docker push ${{ secrets.ECR_REGISTRY }}/$SANITIZED_IMAGE_NAME:$IMAGE_TAG
 
-      - name: Push Docker Image to Amazon ECR
-        run: |
-          docker push ${{ secrets.ECR_REGISTRY }}/$IMAGE_NAME:$IMAGE_TAG
+  stop_runner:
+    name: Stop self-hosted EC2 runner
+    needs:
+      - start_runner
+      - build_and_push_image
+    runs-on: ubuntu-latest
+    if: always() && needs.start_runner.outputs.label
+    steps:
+      - name: Stop EC2 runner
+        uses: machulav/ec2-github-runner@v2
+        with:
+          mode: stop
+          github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          label: ${{ needs.start_runner.outputs.label }}
+          ec2-instance-id: ${{ needs.start_runner.outputs.ec2-instance-id }}
