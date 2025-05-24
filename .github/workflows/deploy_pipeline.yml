@@ -136,17 +136,11 @@ jobs:
             echo "runner-running=false" >> $GITHUB_ENV
           fi
 
-      - name: Get latest Amazon Linux 2023 AMI
+      - name: Set Ubuntu AMI
         if: env.runner-running != 'true'
         run: |
-          LATEST_AMI=$(aws ec2 describe-images \
-            --owners amazon \
-            --filters \
-              "Name=name,Values=al2023-ami-*-x86_64" \
-              "Name=state,Values=available" \
-            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
-            --output text)
-          echo "LATEST_AMI_ID=$LATEST_AMI" >> $GITHUB_ENV
+          # Use Ubuntu 22.04 LTS AMI (us-east-1)
+          echo "UBUNTU_AMI_ID=ami-0c02fb55956c7d316" >> $GITHUB_ENV
 
       - name: Start EC2 runner
         if: env.runner-running != 'true'
@@ -155,7 +149,7 @@ jobs:
         with:
           mode: start
           github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-          ec2-image-id: ${{ env.LATEST_AMI_ID }}
+          ec2-image-id: ${{ env.UBUNTU_AMI_ID }}
           ec2-instance-type: t3.small
           subnet-id: ${{ needs.deploy_aws_infrastructure.outputs.private_data_subnet_az1_id }}
           security-group-id: ${{ needs.deploy_aws_infrastructure.outputs.runner_security_group_id }}
