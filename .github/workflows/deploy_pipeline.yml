@@ -212,9 +212,8 @@ jobs:
             echo "AWS CLI is already installed"
           fi  
 
-  # Create environment file and export to S3 
   export_env_variables:
-    name: Create environment file and export to S3 
+    name: Create environment file and export to S3
     needs:
       - configure_aws_credentials
       - deploy_aws_infrastructure
@@ -250,4 +249,4 @@ jobs:
           ENV_FILE_BUCKET_NAME: ${{ needs.deploy_aws_infrastructure.outputs.env_file_bucket_name }}
           AWS_REGION: ${{ env.AWS_REGION }}
         run: |
-          aws s3 cp ${{ env.ENVIRONMENT_FILE_NAME }} s3://${{ env.ENV_FILE_BUCKET_NAME }}/${{ env.ENVIRONMENT_FILE_NAME }} --region ${{ env.AWS_REGION }} --acl public-read
+          aws s3 cp ${{ env.ENVIRONMENT_FILE_NAME }} s3://${{ env.ENV_FILE_BUCKET_NAME }}/${{ env.ENVIRONMENT_FILE_NAME }} --region ${{ env.AWS_REGION }}
