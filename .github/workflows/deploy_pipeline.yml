@@ -196,15 +196,76 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Update system and install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl unzip
+
+      - name: Install AWS CLI
+        run: |
+          # Check if AWS CLI is already installed
+          if ! command -v aws &> /dev/null; then
+            echo "Installing AWS CLI..."
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+            rm -rf aws awscliv2.zip
+          else
+            echo "AWS CLI is already installed"
+          fi
+          
+          # Verify installation
+          aws --version
+
+      - name: Install Docker (if not present)
+        run: |
+          if ! command -v docker &> /dev/null; then
+            echo "Installing Docker..."
+            sudo apt-get update -y
+            sudo apt-get install -y ca-certificates curl gnupg lsb-release
+            
+            # Add Docker's official GPG key
+            sudo mkdir -p /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            
+            # Set up the repository
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+              $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            
+            # Install Docker Engine
+            sudo apt-get update -y
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            
+            # Add user to docker group
+            sudo usermod -aG docker $USER
+            
+            # Start Docker service
+            sudo systemctl start docker
+            sudo systemctl enable docker
+          else
+            echo "Docker is already installed"
+          fi
+          
+          docker --version
+
       - name: Configure AWS credentials for EC2 runner
         run: |
           aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws configure set default.region ${{ env.AWS_REGION }}
+          
+          # Verify AWS configuration
+          aws sts get-caller-identity
 
       - name: Login to Amazon ECR
         run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+          # Use newgrp to apply docker group membership or use sudo
+          if groups | grep -q docker; then
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+          else
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+          fi
 
       - name: Build Docker image
         env:
@@ -216,7 +277,13 @@ jobs:
           # Sanitize image name
           SANITIZED_IMAGE_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._/-]/-/g' | sed 's/[-_]\+/-/g' | sed 's/^[-_]*//;s/[-_]*$//')
           
-          docker build \
+          # Use sudo for docker if not in docker group
+          DOCKER_CMD="docker"
+          if ! groups | grep -q docker; then
+            DOCKER_CMD="sudo docker"
+          fi
+          
+          $DOCKER_CMD build \
           --build-arg PERSONAL_ACCESS_TOKEN=${{ secrets.PERSONAL_ACCESS_TOKEN }} \
           --build-arg GITHUB_USERNAME=${{ env.GITHUB_USERNAME }} \
           --build-arg REPOSITORY_NAME=${{ env.REPOSITORY_NAME }} \
@@ -237,8 +304,14 @@ jobs:
           # Sanitize image name
           SANITIZED_IMAGE_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._/-]/-/g' | sed 's/[-_]\+/-/g' | sed 's/^[-_]*//;s/[-_]*$//')
           
-          docker tag $SANITIZED_IMAGE_NAME:$IMAGE_TAG ${{ secrets.ECR_REGISTRY }}/$SANITIZED_IMAGE_NAME:$IMAGE_TAG
-          docker push ${{ secrets.ECR_REGISTRY }}/$SANITIZED_IMAGE_NAME:$IMAGE_TAG
+          # Use sudo for docker if not in docker group
+          DOCKER_CMD="docker"
+          if ! groups | grep -q docker; then
+            DOCKER_CMD="sudo docker"
+          fi
+          
+          $DOCKER_CMD tag $SANITIZED_IMAGE_NAME:$IMAGE_TAG ${{ secrets.ECR_REGISTRY }}/$SANITIZED_IMAGE_NAME:$IMAGE_TAG
+          $DOCKER_CMD push ${{ secrets.ECR_REGISTRY }}/$SANITIZED_IMAGE_NAME:$IMAGE_TAG
 
   stop_runner:
     name: Stop self-hosted EC2 runner
