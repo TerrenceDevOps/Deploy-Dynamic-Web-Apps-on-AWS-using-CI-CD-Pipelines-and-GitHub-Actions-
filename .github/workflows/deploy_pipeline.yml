@@ -13,7 +13,6 @@ env:
   REPOSITORY_NAME: application-repo
   WEB_FILE_ZIP: rentzone.zip
   WEB_FILE_UNZIP: rentzone
-
   FLYWAY_VERSION: 9.16.1
 
 jobs:
@@ -65,6 +64,7 @@ jobs:
           echo "ECS_SERVICE_NAME=$(terraform output -raw ecs_service_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
           echo "ENVIRONMENT_FILE_NAME=$(terraform output -raw environment_file_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
           echo "ENV_FILE_BUCKET_NAME=$(terraform output -raw env_file_bucket_name | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
+          echo "ECR_REGISTRY=$(terraform output -raw ecr_registry | grep -Eo '^[^:]+' | tail -n 1)" >> $GITHUB_ENV
 
     outputs:
       terraform_action: ${{ env.TERRAFORM_ACTION }}
@@ -79,6 +79,7 @@ jobs:
       ecs_service_name: ${{ env.ECS_SERVICE_NAME }}
       environment_file_name: ${{ env.ENVIRONMENT_FILE_NAME }}
       env_file_bucket_name: ${{ env.ENV_FILE_BUCKET_NAME }}
+      ecr_registry: ${{ env.ECR_REGISTRY }}
 
   create_ecr_repository:
     name: Create ECR repository
@@ -200,7 +201,7 @@ jobs:
       - name: Update system and install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y curl unzip
+          sudo apt-get install -y curl unzip docker.io jq
 
       - name: Install AWS CLI
         run: |
@@ -212,7 +213,38 @@ jobs:
             rm -rf aws awscliv2.zip
           else
             echo "AWS CLI is already installed"
-          fi  
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ needs.deploy_aws_infrastructure.outputs.image_name }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }} .
+
+      - name: Tag Docker image
+        run: |
+          docker tag ${{ needs.deploy_aws_infrastructure.outputs.image_name }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }} \
+            ${{ needs.deploy_aws_infrastructure.outputs.ecr_registry }}/${{ needs.deploy_aws_infrastructure.outputs.image_name }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push ${{ needs.deploy_aws_infrastructure.outputs.ecr_registry }}/${{ needs.deploy_aws_infrastructure.outputs.image_name }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
+
+      - name: Save image URI as output
+        run: |
+          echo "IMAGE_URI=${{ needs.deploy_aws_infrastructure.outputs.ecr_registry }}/${{ needs.deploy_aws_infrastructure.outputs.image_name }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }}" >> $GITHUB_ENV
+
+    outputs:
+      image_uri: ${{ env.IMAGE_URI }}
 
   export_env_variables:
     name: Create environment file and export to S3
@@ -253,8 +285,6 @@ jobs:
         run: |
           aws s3 cp ${{ env.ENVIRONMENT_FILE_NAME }} s3://${{ env.ENV_FILE_BUCKET_NAME }}/${{ env.ENVIRONMENT_FILE_NAME }} --region ${{ env.AWS_REGION }}
 
-
-  # Migrate data into RDS database with Flyway
   migrate_data:
     name: Migrate data into RDS database with Flyway
     needs:
@@ -292,7 +322,6 @@ jobs:
             -password=${{ env.FLYWAY_PASSWORD }} \
             -locations=${{ env.FLYWAY_LOCATION }} migrate
 
-  # Stop the self-hosted EC2 runner
   stop_runner:
     name: Stop self-hosted EC2 runner
     needs:
@@ -313,7 +342,6 @@ jobs:
           label: ${{ needs.start_runner.outputs.label }}
           ec2-instance-id: ${{ needs.start_runner.outputs.ec2-instance-id }}
 
-  # Create new task definition revision
   create_td_revision:
     name: Create new task definition revision
     needs: 
@@ -331,15 +359,13 @@ jobs:
       - name: Create new task definition revision
         env:
           ECS_FAMILY: ${{ needs.deploy_aws_infrastructure.outputs.task_definition_name }}
-          ECS_IMAGE: ${{ secrets.ECR_REGISTRY }}/${{ needs.deploy_aws_infrastructure.outputs }}:${{ needs.deploy_aws_infrastructure.outputs.image_tag }}
+          ECS_IMAGE: ${{ needs.build_and_push_image.outputs.image_uri }}
         run: |
           # Get existing task definition
-          TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition ${{ env.ECS_FAMILY }})
+          TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition $ECS_FAMILY)
 
-          # update the existing task definition by performing the following actions:
-          # 1. Update the `containerDefinitions[0].image` to the new image we want to deploy
-          # 2. Remove fields from the task definition that are not compatibile with `register-task-definition` --cli-input-json
-          NEW_TASK_DEFINITION=$(echo "$TASK_DEFINITION" | jq --arg IMAGE "${{ env.ECS_IMAGE }}" '.taskDefinition | .containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          # Update the existing task definition
+          NEW_TASK_DEFINITION=$(echo "$TASK_DEFINITION" | jq --arg IMAGE "$ECS_IMAGE" '.taskDefinition | .containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
 
           # Register the new task definition and capture the output as JSON
           NEW_TASK_INFO=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEFINITION")
@@ -351,4 +377,4 @@ jobs:
           echo "NEW_TD_REVISION=$NEW_TD_REVISION" >> $GITHUB_ENV
 
     outputs:
-      new_td_revision: ${{ env.New_TD_REVISION }}
+      new_td_revision: ${{ env.NEW_TD_REVISION }}
