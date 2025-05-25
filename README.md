@@ -97,7 +97,7 @@ Through this project, I gained hands-on experience in:
 ## ✅ Final Result
 
 - ✅ Fully automated CI/CD pipeline from code push to deployment
-- ✅ Laravel app deployed in **ECS Fargate**
+- ✅ Rentzone app deployed in **ECS Fargate**
 - ✅ Infrastructure managed by **Terraform** with remote state in **S3** and locking via **DynamoDB**
 - ✅ Container images built and pushed to **Amazon ECR**
 - ✅ RDS Database migrations handled via **Flyway**
