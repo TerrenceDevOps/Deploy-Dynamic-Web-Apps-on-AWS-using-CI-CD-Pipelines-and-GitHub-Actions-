@@ -8,6 +8,8 @@
 
 > This project demonstrates how to deploy a **rentzone web application** on AWS using **Infrastructure as Code**, **GitHub Actions**, **Docker**, and a **fully automated CI/CD pipeline**.
 ![Alt text](/Components.PNG)
+> End Result
+> ![Alt text](/Outcome.PNG)
 ---
 
 ## 🛠️ Setup & Steps
