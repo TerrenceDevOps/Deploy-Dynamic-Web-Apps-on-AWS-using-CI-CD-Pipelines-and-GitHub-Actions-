@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 > This project demonstrates how to deploy a **rentzone web application** on AWS using **Infrastructure as Code**, **GitHub Actions**, **Docker**, and a **fully automated CI/CD pipeline**.
-![Alt text](/Components.png)
+![Alt text](/Components.PNG)
 ---
 
 ## 🛠️ Setup & Steps
