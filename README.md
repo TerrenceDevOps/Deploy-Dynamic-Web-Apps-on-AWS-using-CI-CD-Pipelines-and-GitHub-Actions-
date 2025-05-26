@@ -5,7 +5,7 @@
 [![AWS](https://img.shields.io/badge/Cloud-AWS-FF9900?logo=amazon-aws)](https://aws.amazon.com/)
 [![Docker](https://img.shields.io/badge/Container-Docker-2496ED?logo=docker)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-Watch Video Here:https://www.loom.com/share/56202d8da3c1454eaf40d31bf9b763a0?sid=a4c16999-0d1c-4548-bb90-1d189222bf8c
+
 > This project demonstrates how to deploy a **rentzone web application** on AWS using **Infrastructure as Code**, **GitHub Actions**, **Docker**, and a **fully automated CI/CD pipeline**.
 ![Alt text](/Components.PNG)
 > End Result
